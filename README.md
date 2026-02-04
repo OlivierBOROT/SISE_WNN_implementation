@@ -2,7 +2,7 @@
 
 **R Package for Time Series Forecasting using Weighted Nearest Neighbors (WNN)**
 
-> **[Version française disponible ci-dessous](#olivierborot-français)**
+> **[Version française disponible ci-dessous](#En-Français)**
 
 ---
 
@@ -121,7 +121,7 @@ Talavera-Llames, R.L., Pérez-Chacón, R., Martínez-Ballesteros, M., Troncoso, 
 
 ---
   
-# OlivierBorot (Français)
+# En Français
 ## Contexte
 
 Ce package a été développé dans le cadre du **Master 2 SISE** (Statistique et Informatique pour la Science des donnéEs) à l'Université Lumière Lyon 2, pour le cours de **Séries Temporelles**.

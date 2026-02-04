@@ -1,0 +1,261 @@
+---
+title: "05 - Weighted Nearest Neighbors (WNN)"
+author: "Time Series Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This notebook implements the Weighted Nearest Neighbors (WNN) algorithm for electricity consumption forecasting using the custom WNN package. We use cross-validation to find optimal hyperparameters.
+
+# Load Required Libraries
+
+```{r libraries}
+if (!require("R6")) install.packages("R6")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("Metrics")) install.packages("Metrics")
+if (!require("tidyr")) install.packages("tidyr")
+
+library(R6)
+library(ggplot2)
+library(Metrics)
+library(tidyr)
+
+# Load the WNN package
+tryCatch({
+  library(OlivierBorot)
+  cat("Loaded WNN from package\n")
+}, error = function(e) {
+  source("../../R/WNN.R")
+  cat("Loaded WNN from source file\n")
+})
+```
+
+# Load Data
+
+```{r load-data}
+load("../data/elec_data.RData")
+
+cat("Training set length:", length(train_ts), "\n")
+cat("Validation set length:", length(validation_ts), "\n")
+cat("Forecast horizon:", horizon, "\n")
+```
+
+# Cross-Validation Function
+
+```{r cv-function}
+# Cross-validation for WNN
+cross_validation_wnn <- function(tsdata, window, k, folds = 4 * 96, h = 96) {
+  
+  n <- length(tsdata)
+  start <- n - folds - h
+  stop <- n - h
+  
+  errors <- c()
+  
+  for (i in seq(start, stop, by = 96)) {
+    train <- window(tsdata, end = c(0, i - 1))
+    test <- window(tsdata, start = c(0, i), end = c(0, i + h - 1))
+    
+    tryCatch({
+      model <- WNN$new(horizon = h, window = window, k = k)
+      fc <- model$fit_predict(train)
+      rmse_val <- sqrt(mean((as.numeric(fc) - as.numeric(test))^2))
+      errors <- c(errors, rmse_val)
+    }, error = function(e) {
+      # Skip this fold if error
+    })
+  }
+  
+  return(mean(errors, na.rm = TRUE))
+}
+```
+
+# Hyperparameter Grid Search with Cross-Validation
+
+```{r grid-search}
+# Define parameter grid
+window_sizes <- c(96, 192, 384)  # 1 day, 2 days, 4 days
+k_values <- c(3, 5, 7, 10, 20)
+
+# Store CV results
+cv_results <- data.frame()
+
+cat("Running grid search with cross-validation...\n")
+cat("This may take a while...\n\n")
+
+for (w in window_sizes) {
+  for (k in k_values) {
+    tryCatch({
+      cv_rmse <- cross_validation_wnn(power_ts, window = w, k = k, 
+                                       folds = 4 * 96, h = horizon)
+      
+      result <- data.frame(
+        Window = w,
+        K = k,
+        CV_RMSE = cv_rmse
+      )
+      
+      cv_results <- rbind(cv_results, result)
+      
+      cat(sprintf("w=%d, k=%d -> CV RMSE=%.2f\n", w, k, cv_rmse))
+      
+    }, error = function(e) {
+      cat(sprintf("w=%d, k=%d -> Error: %s\n", w, k, e$message))
+    })
+  }
+}
+```
+
+# Best Hyperparameters
+
+```{r best-params}
+# Sort by CV RMSE
+cv_results <- cv_results[order(cv_results$CV_RMSE), ]
+rownames(cv_results) <- NULL
+
+cat("\n=== CV RESULTS (sorted by RMSE) ===\n")
+print(cv_results)
+
+best_params <- cv_results[1, ]
+cat("\n--- Best Parameters ---\n")
+cat("Window:", best_params$Window, "\n")
+cat("K:", best_params$K, "\n")
+cat("CV RMSE:", round(best_params$CV_RMSE, 2), "\n")
+```
+
+# Train Best Model on Training Data
+
+```{r best-model}
+# Train with best parameters
+best_wnn <- WNN$new(
+  horizon = horizon,
+  window = best_params$Window,
+  k = best_params$K
+)
+
+# Fit and predict on training set
+best_forecast <- best_wnn$fit_predict(train_ts)
+
+# Display model summary
+best_wnn$summary()
+```
+
+# Evaluate on Validation Set
+
+```{r evaluation}
+actual <- as.numeric(validation_ts)
+pred <- as.numeric(best_forecast)
+
+# Metrics
+test_rmse <- rmse(actual, pred)
+test_mae <- mae(actual, pred)
+test_mape <- mape(actual, pred) * 100
+
+cat("\n=== VALIDATION SET METRICS ===\n")
+cat("RMSE:", round(test_rmse, 2), "\n")
+cat("MAE:", round(test_mae, 2), "\n")
+cat("MAPE:", round(test_mape, 2), "%\n")
+```
+
+# Visualization
+
+```{r visualization, fig.width=12, fig.height=6}
+# Create comparison plot
+plot_data <- data.frame(
+  Time = 1:horizon,
+  Actual = actual,
+  WNN = pred
+)
+
+plot_long <- plot_data %>%
+  pivot_longer(cols = -Time, names_to = "Model", values_to = "Power")
+
+ggplot(plot_long, aes(x = Time, y = Power, color = Model, linetype = Model)) +
+  geom_line(linewidth = 0.8) +
+  scale_color_manual(values = c("Actual" = "black", "WNN" = "orange")) +
+  scale_linetype_manual(values = c("Actual" = "solid", "WNN" = "dashed")) +
+  labs(title = sprintf("WNN Forecast (w=%d, k=%d)", best_params$Window, best_params$K),
+       x = "Time (15-min intervals)",
+       y = "Power (kW)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+# CV RMSE Heatmap
+
+```{r heatmap, fig.width=10, fig.height=6}
+ggplot(cv_results, aes(x = factor(K), y = factor(Window), fill = CV_RMSE)) +
+  geom_tile() +
+  geom_text(aes(label = round(CV_RMSE, 1)), color = "white", size = 4) +
+  scale_fill_gradient(low = "darkgreen", high = "red") +
+  labs(title = "WNN Cross-Validation RMSE",
+       x = "Number of Neighbors (K)",
+       y = "Window Size",
+       fill = "CV RMSE") +
+  theme_minimal()
+```
+
+# Daily Pattern Analysis
+
+```{r daily-pattern, fig.width=12, fig.height=6}
+time_of_day <- seq(0, 23.75, by = 0.25)
+
+plot_daily <- data.frame(
+  Hour = time_of_day,
+  Actual = actual,
+  Forecast = pred
+)
+
+ggplot(plot_daily, aes(x = Hour)) +
+  geom_line(aes(y = Actual, color = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Forecast, color = "WNN Forecast"), linewidth = 1, linetype = "dashed") +
+  labs(title = "WNN Forecast vs Actual - Daily Pattern",
+       x = "Hour of Day",
+       y = "Power (kW)",
+       color = "") +
+  scale_x_continuous(breaks = seq(0, 24, by = 4)) +
+  theme_minimal()
+```
+
+# Save Results
+
+```{r save-results}
+wnn_results <- list(
+  cv_results = cv_results,
+  best_params = list(
+    window = best_params$Window,
+    k = best_params$K
+  ),
+  best_model = best_wnn,
+  metrics = data.frame(
+    Model = sprintf("WNN(w=%d, k=%d)", best_params$Window, best_params$K),
+    RMSE = test_rmse,
+    MAE = test_mae,
+    MAPE = test_mape,
+    CV_RMSE = best_params$CV_RMSE
+  ),
+  best_model_name = sprintf("WNN(w=%d, k=%d)", best_params$Window, best_params$K),
+  best_rmse = test_rmse,
+  best_cv_rmse = best_params$CV_RMSE,
+  best_forecast = pred
+)
+
+save(wnn_results, file = "../data/wnn_results.RData")
+cat("Results saved to ../data/wnn_results.RData\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,238 @@
+---
+title: "01 - Holt-Winters Exponential Smoothing"
+author: "Time Series Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This notebook implements Holt-Winters exponential smoothing models for electricity consumption forecasting. We will test both additive and multiplicative seasonal models with cross-validation.
+
+# Load Required Libraries
+
+```{r libraries}
+if (!require("forecast")) install.packages("forecast")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("Metrics")) install.packages("Metrics")
+if (!require("tidyr")) install.packages("tidyr")
+
+library(forecast)
+library(ggplot2)
+library(Metrics)
+library(tidyr)
+```
+
+# Load Data
+
+```{r load-data}
+# Load the transformed data
+load("../data/elec_data.RData")
+
+cat("Training set length:", length(train_ts), "\n")
+cat("Validation set length:", length(validation_ts), "\n")
+cat("Forecast horizon:", horizon, "\n")
+```
+
+# Cross-Validation Function
+
+```{r cv-function}
+# Cross-validation function for time series
+cross_validation <- function(tsdata, forecast_fun, folds = 4 * 96, h = 96) {
+  
+  n <- length(tsdata)
+  start <- n - folds - h
+  stop <- n - h
+  
+  errors <- c()
+  
+  for (i in seq(start, stop, by = 96)) {  # Step by 1 day
+    train <- window(tsdata, end = c(0, i - 1))
+    test <- window(tsdata, start = c(0, i), end = c(0, i + h - 1))
+    
+    tryCatch({
+      fc <- forecast_fun(train)
+      rmse_val <- sqrt(mean((fc - test)^2))
+      errors <- c(errors, rmse_val)
+    }, error = function(e) {
+      cat("CV fold error:", e$message, "\n")
+    })
+  }
+  
+  return(mean(errors, na.rm = TRUE))
+}
+```
+
+# Holt-Winters Models
+
+## Additive Seasonal Model
+
+```{r hw-additive}
+# Fit Holt-Winters additive model
+hw_add <- HoltWinters(train_ts, seasonal = "additive")
+
+# Display model summary
+print(hw_add)
+
+# Forecast
+hw_add_forecast <- forecast(hw_add, h = horizon)
+
+# Plot forecast
+plot(hw_add_forecast, main = "Holt-Winters Additive Forecast")
+lines(c(rep(NA, length(train_ts)), as.numeric(validation_ts)), col = "red", lty = 2)
+legend("topleft", legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = c(1, 2))
+```
+
+## Multiplicative Seasonal Model
+
+```{r hw-multiplicative}
+# Fit Holt-Winters multiplicative model
+hw_mult <- HoltWinters(train_ts, seasonal = "multiplicative")
+
+# Display model summary
+print(hw_mult)
+
+# Forecast
+hw_mult_forecast <- forecast(hw_mult, h = horizon)
+
+# Plot forecast
+plot(hw_mult_forecast, main = "Holt-Winters Multiplicative Forecast")
+lines(c(rep(NA, length(train_ts)), as.numeric(validation_ts)), col = "red", lty = 2)
+legend("topleft", legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = c(1, 2))
+```
+
+# Cross-Validation
+
+```{r cross-validation}
+cat("Running cross-validation (4 days, may take a moment)...\n\n")
+
+# Wrapper functions for CV
+hw_add_cv <- function(tsdata) {
+  model <- HoltWinters(tsdata, seasonal = "additive")
+  fc <- forecast(model, h = horizon)
+  return(as.numeric(fc$mean))
+}
+
+hw_mult_cv <- function(tsdata) {
+  model <- HoltWinters(tsdata, seasonal = "multiplicative")
+  fc <- forecast(model, h = horizon)
+  return(as.numeric(fc$mean))
+}
+
+# Run CV
+cv_rmse_add <- cross_validation(power_ts, hw_add_cv, folds = 4 * 96, h = horizon)
+cv_rmse_mult <- cross_validation(power_ts, hw_mult_cv, folds = 4 * 96, h = horizon)
+
+cat("CV RMSE Additive:", round(cv_rmse_add, 2), "\n")
+cat("CV RMSE Multiplicative:", round(cv_rmse_mult, 2), "\n")
+```
+
+# Model Comparison
+
+```{r comparison}
+# Calculate error metrics for each model
+calc_metrics <- function(actual, predicted, model_name, cv_rmse = NA) {
+  data.frame(
+    Model = model_name,
+    RMSE = rmse(actual, predicted),
+    MAE = mae(actual, predicted),
+    MAPE = mape(actual, predicted) * 100,
+    CV_RMSE = cv_rmse
+  )
+}
+
+# Extract point forecasts
+hw_add_pred <- as.numeric(hw_add_forecast$mean)
+hw_mult_pred <- as.numeric(hw_mult_forecast$mean)
+actual <- as.numeric(validation_ts)
+
+# Calculate metrics
+results <- rbind(
+  calc_metrics(actual, hw_add_pred, "Holt-Winters Additive", cv_rmse_add),
+  calc_metrics(actual, hw_mult_pred, "Holt-Winters Multiplicative", cv_rmse_mult)
+)
+
+print(results)
+
+# Find best model (based on CV RMSE for robustness)
+best_model_idx <- which.min(results$CV_RMSE)
+cat("\nBest model (by CV):", results$Model[best_model_idx], "\n")
+```
+
+# Visualization of Results
+
+```{r visualization, fig.width=12, fig.height=6}
+# Create comparison plot
+plot_data <- data.frame(
+  Time = 1:horizon,
+  Actual = actual,
+  `HW Additive` = hw_add_pred,
+  `HW Multiplicative` = hw_mult_pred,
+  check.names = FALSE
+)
+
+# Reshape to long format
+plot_long <- plot_data %>%
+  pivot_longer(cols = -Time, names_to = "Model", values_to = "Power")
+
+# add the real data
+plot_long <- rbind(plot_long,
+                       data.frame(Time = 1:horizon,
+                                  Model = "Actual",
+                                  Power = actual))
+# Set factor levels for proper ordering
+plot_long$Model <- factor(plot_long$Model, levels = c("Actual", "HW Additive", "HW Multiplicative"))
+
+# Plot
+ggplot(plot_long, aes(x = Time, y = Power, color = Model, linetype = Model)) +
+  geom_line(linewidth = 0.8) +
+  scale_color_manual(values = c("Actual" = "black", 
+                                "HW Additive" = "blue",
+                                "HW Multiplicative" = "red")) +
+  scale_linetype_manual(values = c("Actual" = "solid",
+                                  "HW Additive" = "dashed",
+                                  "HW Multiplicative" = "dashed")) +
+  labs(title = "Holt-Winters Models Comparison",
+       x = "Time (15-min intervals)",
+       y = "Power (kW)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+# Save Results
+
+```{r save-results}
+# Save the best model and its forecast
+hw_results <- list(
+  models = list(
+    hw_additive = hw_add,
+    hw_multiplicative = hw_mult
+  ),
+  forecasts = list(
+    hw_additive = hw_add_pred,
+    hw_multiplicative = hw_mult_pred
+  ),
+  metrics = results,
+  best_model = results$Model[best_model_idx],
+  best_rmse = results$RMSE[best_model_idx],
+  best_cv_rmse = results$CV_RMSE[best_model_idx],
+  best_forecast = if (results$Model[best_model_idx] == "Holt-Winters Additive") hw_add_pred else hw_mult_pred
+)
+
+save(hw_results, file = "../data/hw_results.RData")
+cat("Results saved to ../data/hw_results.RData\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

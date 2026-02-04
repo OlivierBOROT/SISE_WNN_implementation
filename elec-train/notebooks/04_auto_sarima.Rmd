@@ -1,0 +1,299 @@
+---
+title: "04 - Auto SARIMA"
+author: "Time Series Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This notebook uses automatic SARIMA model selection using the `auto.arima()` function from the forecast package. This function automatically finds the best ARIMA/SARIMA model based on AIC, BIC, or AICc criteria.
+
+# Load Required Libraries
+
+```{r libraries}
+if (!require("forecast")) install.packages("forecast")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("Metrics")) install.packages("Metrics")
+
+library(forecast)
+library(ggplot2)
+library(Metrics)
+```
+
+# Load Data
+
+```{r load-data}
+load("../data/elec_data.RData")
+
+cat("Training set length:", length(train_ts), "\n")
+cat("Validation set length:", length(validation_ts), "\n")
+cat("Forecast horizon:", horizon, "\n")
+cat("Seasonal frequency:", frequency_15min, "\n")
+```
+
+# Auto ARIMA - Default Settings
+
+```{r auto-arima-default}
+cat("Fitting auto.arima with default settings...\n")
+cat("This may take a while due to the high seasonal frequency.\n")
+
+# Start timing
+start_time <- Sys.time()
+
+# Auto ARIMA with default settings
+auto_default <- auto.arima(train_ts, 
+                           trace = TRUE,
+                           stepwise = TRUE,  # Use stepwise for speed
+                           approximation = TRUE)  # Use approximation for speed
+
+end_time <- Sys.time()
+cat("\nFitting time:", difftime(end_time, start_time, units = "secs"), "seconds\n")
+
+# Display model
+print(auto_default)
+summary(auto_default)
+```
+
+# Auto ARIMA - Extended Search
+
+```{r auto-arima-extended}
+cat("\nFitting auto.arima with extended search...\n")
+
+start_time <- Sys.time()
+
+# Auto ARIMA with more thorough search
+auto_extended <- auto.arima(train_ts,
+                            max.p = 5,
+                            max.q = 5,
+                            max.P = 2,
+                            max.Q = 2,
+                            max.d = 2,
+                            max.D = 1,
+                            stepwise = TRUE,
+                            approximation = TRUE,
+                            trace = FALSE)
+
+end_time <- Sys.time()
+cat("Fitting time:", difftime(end_time, start_time, units = "secs"), "seconds\n")
+
+print(auto_extended)
+summary(auto_extended)
+```
+
+# Auto ARIMA - With Seasonality Focus
+
+```{r auto-arima-seasonal}
+cat("\nFitting auto.arima with seasonal focus...\n")
+
+start_time <- Sys.time()
+
+# Force seasonal component
+auto_seasonal <- auto.arima(train_ts,
+                            seasonal = TRUE,
+                            stepwise = TRUE,
+                            approximation = TRUE,
+                            trace = FALSE)
+
+end_time <- Sys.time()
+cat("Fitting time:", difftime(end_time, start_time, units = "secs"), "seconds\n")
+
+print(auto_seasonal)
+```
+
+# Auto ARIMA - Using AICc vs BIC
+
+```{r auto-arima-bic}
+cat("\nFitting auto.arima with BIC criterion...\n")
+
+# Using BIC instead of AICc
+auto_bic <- auto.arima(train_ts,
+                       ic = "bic",
+                       stepwise = TRUE,
+                       approximation = TRUE,
+                       trace = FALSE)
+
+print(auto_bic)
+```
+
+# Generate Forecasts
+
+```{r forecasts}
+# Generate forecasts from all models
+fc_default <- forecast(auto_default, h = horizon)
+fc_extended <- forecast(auto_extended, h = horizon)
+fc_seasonal <- forecast(auto_seasonal, h = horizon)
+fc_bic <- forecast(auto_bic, h = horizon)
+
+# Plot forecasts
+par(mfrow = c(2, 2))
+plot(fc_default, main = "Auto ARIMA (Default)")
+plot(fc_extended, main = "Auto ARIMA (Extended)")
+plot(fc_seasonal, main = "Auto ARIMA (Seasonal)")
+plot(fc_bic, main = "Auto ARIMA (BIC)")
+par(mfrow = c(1, 1))
+```
+
+# Model Comparison
+
+```{r comparison}
+calc_metrics <- function(actual, predicted, model_name) {
+  data.frame(
+    Model = model_name,
+    RMSE = rmse(actual, predicted),
+    MAE = mae(actual, predicted),
+    MAPE = mape(actual, predicted) * 100
+  )
+}
+
+arima_string <- function(model) {
+  order <- model$arma
+  seasonal <- if(length(order) >= 7 && order[5] > 1) {
+    sprintf("(%d,%d,%d)[%d]", order[3], order[7], order[4], order[5])
+  } else {
+    ""
+  }
+  sprintf("ARIMA(%d,%d,%d)%s", order[1], order[6], order[2], seasonal)
+}
+
+actual <- as.numeric(validation_ts)
+
+results <- rbind(
+  calc_metrics(actual, as.numeric(fc_default$mean), 
+               paste0("Auto Default: ", arima_string(auto_default))),
+  calc_metrics(actual, as.numeric(fc_extended$mean), 
+               paste0("Auto Extended: ", arima_string(auto_extended))),
+  calc_metrics(actual, as.numeric(fc_seasonal$mean), 
+               paste0("Auto Seasonal: ", arima_string(auto_seasonal))),
+  calc_metrics(actual, as.numeric(fc_bic$mean), 
+               paste0("Auto BIC: ", arima_string(auto_bic)))
+)
+
+print(results)
+
+# Best model
+best_idx <- which.min(results$RMSE)
+cat("\nBest Auto SARIMA model:", results$Model[best_idx], "\n")
+cat("Best RMSE:", results$RMSE[best_idx], "\n")
+```
+
+# Residual Diagnostics for Best Model
+
+```{r residuals}
+# Get best model
+best_models <- list(auto_default, auto_extended, auto_seasonal, auto_bic)
+best_auto <- best_models[[best_idx]]
+
+checkresiduals(best_auto)
+
+# Additional diagnostics
+cat("\n--- Model Diagnostics ---\n")
+cat("AIC:", best_auto$aic, "\n")
+cat("BIC:", best_auto$bic, "\n")
+cat("AICc:", best_auto$aicc, "\n")
+
+# Ljung-Box test
+lb_test <- Box.test(residuals(best_auto), lag = 20, type = "Ljung-Box")
+cat("Ljung-Box p-value:", lb_test$p.value, "\n")
+```
+
+# Visualization
+
+```{r visualization, fig.width=12, fig.height=6}
+plot_data <- data.frame(
+  Time = 1:horizon,
+  Actual = actual,
+  Default = as.numeric(fc_default$mean),
+  Extended = as.numeric(fc_extended$mean),
+  Seasonal = as.numeric(fc_seasonal$mean),
+  BIC = as.numeric(fc_bic$mean)
+)
+
+ggplot(plot_data, aes(x = Time)) +
+  geom_line(aes(y = Actual, color = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Default, color = "Default"), linetype = "dashed") +
+  geom_line(aes(y = Extended, color = "Extended"), linetype = "dashed") +
+  geom_line(aes(y = Seasonal, color = "Seasonal"), linetype = "dashed") +
+  geom_line(aes(y = BIC, color = "BIC"), linetype = "dashed") +
+  labs(title = "Auto ARIMA Models Comparison",
+       x = "Time (15-min intervals)",
+       y = "Power (kW)",
+       color = "Model") +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual" = "black", 
+                                "Default" = "blue",
+                                "Extended" = "red",
+                                "Seasonal" = "green",
+                                "BIC" = "purple"))
+```
+
+# Prediction Intervals
+
+```{r prediction-intervals, fig.width=12, fig.height=6}
+# Plot best forecast with prediction intervals
+best_fc <- list(fc_default, fc_extended, fc_seasonal, fc_bic)[[best_idx]]
+
+# Create data frame for plotting
+plot_pi <- data.frame(
+  Time = 1:horizon,
+  Actual = actual,
+  Forecast = as.numeric(best_fc$mean),
+  Lower80 = as.numeric(best_fc$lower[, 1]),
+  Upper80 = as.numeric(best_fc$upper[, 1]),
+  Lower95 = as.numeric(best_fc$lower[, 2]),
+  Upper95 = as.numeric(best_fc$upper[, 2])
+)
+
+ggplot(plot_pi, aes(x = Time)) +
+  geom_ribbon(aes(ymin = Lower95, ymax = Upper95), fill = "lightblue", alpha = 0.4) +
+  geom_ribbon(aes(ymin = Lower80, ymax = Upper80), fill = "steelblue", alpha = 0.4) +
+  geom_line(aes(y = Forecast, color = "Forecast"), linewidth = 1) +
+  geom_line(aes(y = Actual, color = "Actual"), linewidth = 1) +
+  scale_color_manual(values = c("Actual" = "red", "Forecast" = "blue")) +
+  labs(title = paste("Best Auto ARIMA Forecast:", results$Model[best_idx]),
+       subtitle = "With 80% and 95% prediction intervals",
+       x = "Time (15-min intervals)",
+       y = "Power (kW)",
+       color = "") +
+  theme_minimal()
+```
+
+# Save Results
+
+```{r save-results}
+auto_sarima_results <- list(
+  models = list(
+    default = auto_default,
+    extended = auto_extended,
+    seasonal = auto_seasonal,
+    bic = auto_bic
+  ),
+  forecasts = list(
+    default = as.numeric(fc_default$mean),
+    extended = as.numeric(fc_extended$mean),
+    seasonal = as.numeric(fc_seasonal$mean),
+    bic = as.numeric(fc_bic$mean)
+  ),
+  metrics = results,
+  best_model = results$Model[best_idx],
+  best_rmse = results$RMSE[best_idx],
+  best_forecast = as.numeric(best_fc$mean)
+)
+
+save(auto_sarima_results, file = "../data/auto_sarima_results.RData")
+cat("Results saved to ../data/auto_sarima_results.RData\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

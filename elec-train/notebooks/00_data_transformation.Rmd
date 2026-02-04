@@ -1,0 +1,186 @@
+---
+title: "00 - Data Transformation"
+author: "Time Series Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This notebook handles the transformation of the raw electricity consumption data from Excel format (.xlsx) to R data format (.RData). This allows for faster loading in subsequent analysis notebooks.
+
+# Load Required Libraries
+
+```{r libraries}
+# Install packages if needed
+if (!require("readxl")) install.packages("readxl")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("lubridate")) install.packages("lubridate")
+if (!require("forecast")) install.packages("forecast")
+
+
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(forecast)
+```
+
+# Load Raw Data
+
+```{r load-data}
+# Load the Excel file
+data_path <- "../data/Elec-train.xlsx"
+elec_data <- read_excel(data_path)
+
+# Display structure
+str(elec_data)
+head(elec_data)
+```
+
+# Data Exploration
+
+```{r explore}
+# Check dimensions
+cat("Number of observations:", nrow(elec_data), "\n")
+cat("Number of variables:", ncol(elec_data), "\n")
+
+# Check column names
+cat("\nColumn names:\n")
+print(colnames(elec_data))
+
+# Summary statistics
+summary(elec_data)
+```
+
+# Data Cleaning and Transformation
+
+```{r transform}
+# Rename columns for easier handling
+colnames(elec_data) <- c("datetime", "power_kW", "temperature_celcius")
+
+# Convert datetime if needed
+elec_data$datetime <- as.POSIXct(elec_data$datetime,
+                                 origin = "1899-12-30",
+                                 tz = "UTC")
+
+# Check for missing values
+cat("Missing values per column:\n")
+print(colSums(is.na(elec_data)))
+```
+
+# Create Time Series Objects
+
+```{r create-ts}
+# The data is recorded every 15 minutes
+# 96 observations per day (24 hours * 4 quarters)
+frequency_15min <- 96
+
+# Convert the data frame to time series objects (using na.omit as in friend's approach)
+power_ts <- ts(na.omit(elec_data[, "power_kW"]),
+               frequency = frequency_15min)
+
+temperature_ts <- ts(na.omit(elec_data[, "temperature_celcius"]),
+                     frequency = frequency_15min)
+
+# Interpolate 0 values (likely missing data or measurement errors)
+power_ts[power_ts == 0] <- NA
+power_ts <- forecast::na.interp(power_ts)
+
+temperature_ts[temperature_ts == 0] <- NA
+temperature_ts <- forecast::na.interp(temperature_ts)
+
+# Display time series info
+cat("Power time series:\n")
+print(head(power_ts))
+cat("\nStart:", start(power_ts), "\n")
+cat("End:", end(power_ts), "\n")
+cat("Frequency:", frequency(power_ts), "\n")
+
+```
+
+# Split Data for Training and Validation
+
+```{r split-data}
+# We need to forecast 96 values (one full day: 2/19/2010)
+horizon <- 96
+
+# Keep the last day for validation (2/18/2010)
+n <- length(power_ts)
+
+# Training set: all data except last day
+train_ts <- ts(power_ts[1:(n - horizon)], frequency = frequency_15min)
+
+# Validation set: last day
+validation_ts <- ts(power_ts[(n - horizon + 1):n], frequency = frequency_15min)
+
+# Temperature splits (for multivariate models)
+n_temp <- length(temperature_ts)
+train_temp_ts <- ts(temperature_ts[1:(n - horizon)], frequency = frequency_15min)
+# Test temperature includes one extra day (as per exam: temperature available for 2/17/2010)
+validation_temp_ts <- ts(temperature_ts[(n - horizon + 1):min(n_temp, n + horizon)], frequency = frequency_15min)
+
+cat("Training set length:", length(train_ts), "\n")
+cat("Validation set length:", length(validation_ts), "\n")
+cat("Training temperature length:", length(train_temp_ts), "\n")
+cat("Validation temperature length:", length(validation_temp_ts), "\n")
+```
+
+# Visualize the Data
+
+```{r visualize, fig.width=12, fig.height=6}
+# Plot the full time series
+plot(power_ts, main = "Electricity Consumption (kW)", 
+     xlab = "Time (15-min intervals)", ylab = "Power (kW)",
+     col = "steelblue")
+grid()
+
+# Plot temperature
+plot(temperature_ts, main = "Outdoor Temperature", 
+     xlab = "Time (15-min intervals)", ylab = "Temperature",
+     col = "firebrick")
+grid()
+```
+
+# Save Transformed Data
+
+```{r save-data}
+# Save all objects to RData file
+save(
+  elec_data,
+  power_ts,
+  temperature_ts,
+  train_ts,
+  validation_ts,
+  train_temp_ts,
+  validation_temp_ts,
+  horizon,
+  frequency_15min,
+  file = "../data/elec_data.RData"
+)
+
+cat("Data saved to ../data/elec_data.RData\n")
+cat("\nSaved objects:\n")
+cat("- elec_data: Raw data frame\n")
+cat("- power_ts: Full power time series\n")
+cat("- temperature_ts: Full temperature time series\n")
+cat("- train_ts: Training time series\n")
+cat("- validation_ts: Validation time series (last day)\n")
+cat("- train_temp_ts: Training temperature time series\n")
+cat("- validation_temp_ts: Validation temperature time series\n")
+cat("- horizon: Forecast horizon (96)\n")
+cat("- frequency_15min: Time series frequency (96)\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

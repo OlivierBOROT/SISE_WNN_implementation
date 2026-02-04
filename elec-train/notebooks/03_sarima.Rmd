@@ -1,0 +1,289 @@
+---
+title: "03 - SARIMA Models (Manual Analysis)"
+author: "Time Series Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This notebook implements SARIMA (Seasonal ARIMA) models with proper ACF/PACF analysis to determine the optimal model order, following Box-Jenkins methodology.
+
+# Load Required Libraries
+
+```{r libraries}
+if (!require("forecast")) install.packages("forecast")
+if (!require("tseries")) install.packages("tseries")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("Metrics")) install.packages("Metrics")
+
+library(forecast)
+library(tseries)
+library(ggplot2)
+library(Metrics)
+```
+
+# Load Data
+
+```{r load-data}
+load("../data/elec_data.RData")
+
+cat("Training set length:", length(train_ts), "\n")
+cat("Validation set length:", length(validation_ts), "\n")
+cat("Forecast horizon:", horizon, "\n")
+cat("Seasonal period:", frequency_15min, "\n")
+```
+
+# Time Series Analysis
+
+## Visual Inspection
+
+```{r visual-inspection, fig.width=12, fig.height=4}
+autoplot(train_ts) +
+  ggtitle("Training Data - Electricity Consumption") +
+  xlab("Time") + ylab("Power (kW)")
+```
+
+## Initial ACF/PACF Analysis
+
+```{r initial-acf, fig.width=12, fig.height=8}
+# Display ACF and PACF
+ggtsdisplay(train_ts, lag.max = 200, main = "Original Series - ACF/PACF")
+```
+
+**Observations:**
+- Clear seasonality at lag 96 (daily pattern)
+- The ACF shows slow decay → non-stationarity
+- Need to apply seasonal differencing
+
+# Differencing Analysis
+
+## Seasonal Differencing (D=1)
+
+```{r seasonal-diff, fig.width=12, fig.height=8}
+# Apply seasonal differencing (lag = 96)
+train_sdiff <- diff(train_ts, lag = frequency_15min)
+
+ggtsdisplay(train_sdiff, lag.max = 200, main = "After Seasonal Differencing (D=1)")
+```
+
+We eliminated seasonality. Let's check if we need additional differencing.
+
+```{r double-diff, fig.width=12, fig.height=8}
+# Apply first differencing to check
+train_ddiff <- diff(train_sdiff)
+
+ggtsdisplay(train_ddiff, lag.max = 100, main = "After Seasonal + First Differencing (D=1, d=1)")
+```
+
+```{r ljung-box}
+# Ljung-Box test for autocorrelation
+Box.test(train_sdiff, lag = 20, type = "Ljung-Box")
+```
+
+# Model Building Based on ACF/PACF
+
+Based on the ACF/PACF analysis:
+
+- **ACF**: Shows significant spike at lag 96 (seasonal MA component) with gradual decay
+- **PACF**: Shows significant spikes at early lags (AR component)
+
+We'll start with a simple model and iteratively improve:
+
+## Model 1: SARIMA(0,0,0)(0,1,1)[96]
+
+```{r model1, fig.width=12, fig.height=6}
+sarima_011 <- Arima(train_ts, order = c(0, 0, 0), 
+                    seasonal = list(order = c(0, 1, 1), period = frequency_15min))
+
+cat("Model 1: SARIMA(0,0,0)(0,1,1)[96]\n")
+cat("AIC:", sarima_011$aic, "\n")
+
+# Check residuals
+sarima_011 %>% residuals() %>% ggtsdisplay(lag.max = 100, 
+                                            main = "Residuals - SARIMA(0,0,0)(0,1,1)")
+```
+
+Still correlation in residuals. Looking at PACF, we see significant spikes around lag 5.
+
+## Model 2: SARIMA(5,0,0)(0,1,1)[96]
+
+```{r model2, fig.width=12, fig.height=6}
+sarima_501 <- Arima(train_ts, order = c(5, 0, 0), 
+                    seasonal = list(order = c(0, 1, 1), period = frequency_15min))
+
+cat("\nModel 2: SARIMA(5,0,0)(0,1,1)[96]\n")
+cat("AIC:", sarima_501$aic, "\n")
+
+# Check residuals
+sarima_501 %>% residuals() %>% ggtsdisplay(lag.max = 100, 
+                                            main = "Residuals - SARIMA(5,0,0)(0,1,1)")
+```
+
+```{r check-residuals-2}
+checkresiduals(sarima_501)
+```
+
+## Model 3: SARIMA(5,0,1)(0,1,1)[96]
+
+```{r model3, fig.width=12, fig.height=6}
+sarima_511 <- Arima(train_ts, order = c(5, 0, 1), 
+                    seasonal = list(order = c(0, 1, 1), period = frequency_15min))
+
+cat("\nModel 3: SARIMA(5,0,1)(0,1,1)[96]\n")
+cat("AIC:", sarima_511$aic, "\n")
+
+# Check residuals
+checkresiduals(sarima_511)
+```
+
+## Auto ARIMA for Comparison
+
+```{r auto-arima}
+cat("\nRunning auto.arima for comparison...\n")
+sarima_auto <- auto.arima(train_ts, seasonal = TRUE, stepwise = TRUE, approximation = TRUE)
+
+cat("\nAuto ARIMA selected:", capture.output(sarima_auto)[2], "\n")
+cat("AIC:", sarima_auto$aic, "\n")
+
+checkresiduals(sarima_auto)
+```
+
+# Model Comparison
+
+```{r model-summary}
+# Summary of all models
+cat("\n=== MODEL COMPARISON ===\n\n")
+cat("SARIMA(0,0,0)(0,1,1)[96] - AIC:", sarima_011$aic, "\n")
+cat("SARIMA(5,0,0)(0,1,1)[96] - AIC:", sarima_501$aic, "\n")
+cat("SARIMA(5,0,1)(0,1,1)[96] - AIC:", sarima_511$aic, "\n")
+cat("Auto ARIMA              - AIC:", sarima_auto$aic, "\n")
+```
+
+# Forecasting
+
+```{r forecasts, fig.width=12, fig.height=8}
+# Generate forecasts
+fc_011 <- forecast(sarima_011, h = horizon)
+fc_501 <- forecast(sarima_501, h = horizon)
+fc_511 <- forecast(sarima_511, h = horizon)
+fc_auto <- forecast(sarima_auto, h = horizon)
+
+actual <- as.numeric(validation_ts)
+
+# Plot comparison
+par(mfrow = c(2, 2))
+plot(fc_011, main = "SARIMA(0,0,0)(0,1,1)")
+lines(c(rep(NA, length(train_ts)), actual), col = "red")
+
+plot(fc_501, main = "SARIMA(5,0,0)(0,1,1)")
+lines(c(rep(NA, length(train_ts)), actual), col = "red")
+
+plot(fc_511, main = "SARIMA(5,0,1)(0,1,1)")
+lines(c(rep(NA, length(train_ts)), actual), col = "red")
+
+plot(fc_auto, main = paste("Auto:", capture.output(sarima_auto)[2]))
+lines(c(rep(NA, length(train_ts)), actual), col = "red")
+par(mfrow = c(1, 1))
+```
+
+# Metrics Comparison
+
+```{r metrics}
+calc_metrics <- function(actual, predicted, model_name, aic) {
+  data.frame(
+    Model = model_name,
+    RMSE = rmse(actual, as.numeric(predicted)),
+    MAE = mae(actual, as.numeric(predicted)),
+    MAPE = mape(actual, as.numeric(predicted)) * 100,
+    AIC = aic
+  )
+}
+
+results <- rbind(
+  calc_metrics(actual, fc_011$mean, "SARIMA(0,0,0)(0,1,1)", sarima_011$aic),
+  calc_metrics(actual, fc_501$mean, "SARIMA(5,0,0)(0,1,1)", sarima_501$aic),
+  calc_metrics(actual, fc_511$mean, "SARIMA(5,0,1)(0,1,1)", sarima_511$aic),
+  calc_metrics(actual, fc_auto$mean, "Auto SARIMA", sarima_auto$aic)
+)
+
+print(results)
+
+best_idx <- which.min(results$RMSE)
+cat("\nBest model by RMSE:", results$Model[best_idx], "\n")
+```
+
+# Visualization
+
+```{r final-viz, fig.width=12, fig.height=6}
+# Zoomed comparison
+plot_data <- data.frame(
+  Time = 1:horizon,
+  Actual = actual,
+  `SARIMA_501` = as.numeric(fc_501$mean),
+  `SARIMA_511` = as.numeric(fc_511$mean),
+  `Auto_SARIMA` = as.numeric(fc_auto$mean),
+  check.names = FALSE
+)
+
+library(tidyr)
+plot_long <- plot_data %>%
+  pivot_longer(cols = -Time, names_to = "Model", values_to = "Power")
+
+ggplot(plot_long, aes(x = Time, y = Power, color = Model, linetype = Model)) +
+  geom_line(linewidth = 0.8) +
+  scale_linetype_manual(values = c("Actual" = "solid", 
+                                   "SARIMA_501" = "dashed",
+                                   "SARIMA_511" = "dashed",
+                                   "Auto_SARIMA" = "dashed")) +
+  labs(title = "SARIMA Models Comparison",
+       x = "Time (15-min intervals)",
+       y = "Power (kW)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+# Save Results
+
+```{r save-results}
+# Select best forecast
+best_forecasts <- list(fc_011, fc_501, fc_511, fc_auto)
+best_models <- list(sarima_011, sarima_501, sarima_511, sarima_auto)
+
+sarima_results <- list(
+  models = list(
+    sarima_011 = sarima_011,
+    sarima_501 = sarima_501,
+    sarima_511 = sarima_511,
+    sarima_auto = sarima_auto
+  ),
+  forecasts = list(
+    sarima_011 = as.numeric(fc_011$mean),
+    sarima_501 = as.numeric(fc_501$mean),
+    sarima_511 = as.numeric(fc_511$mean),
+    sarima_auto = as.numeric(fc_auto$mean)
+  ),
+  metrics = results,
+  best_model = results$Model[best_idx],
+  best_rmse = results$RMSE[best_idx],
+  best_forecast = as.numeric(best_forecasts[[best_idx]]$mean),
+  best_model_object = best_models[[best_idx]]
+)
+
+save(sarima_results, file = "../data/sarima_results.RData")
+cat("Results saved to ../data/sarima_results.RData\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

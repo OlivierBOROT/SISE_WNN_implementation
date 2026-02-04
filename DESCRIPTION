@@ -1,0 +1,26 @@
+Package: OlivierBorot
+Title: Time Series Forecasting Using Weighted Nearest Neighbors (WNN)
+Version: 1.0
+Authors@R: 
+    person("Olivier", "Borot", , "olivier.dominique.borot@email.com", role = c("aut", "cre"))
+Description: Implementation of the Weighted Nearest Neighbors (WNN) algorithm 
+    for time series forecasting as described in Talavera-Llames et al. (2016). 
+    The package provides a simple class interface to create WNN models, fit them 
+    to time series data, and generate forecasts.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends: 
+    R (>= 3.5)
+LazyData: true
+Imports: 
+    R6
+Suggests: 
+    forecast,
+    ggplot2,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+VignetteBuilder: knitr

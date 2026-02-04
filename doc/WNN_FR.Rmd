@@ -1,0 +1,265 @@
+---
+title: "Prévision de Séries Temporelles avec WNN"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Prévision de Séries Temporelles avec WNN (Français)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4
+)
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+library(OlivierBorot)
+library(forecast)
+library(ggplot2)
+```
+
+# Introduction
+
+Le package **OlivierBorot** implémente l'algorithme **Weighted Nearest Neighbors (WNN)** pour la prévision de séries temporelles, tel que décrit dans Talavera-Llames et al. (2016).
+Please note there is also an English version of this vignette available [here](WNN_EN.html), named "WNN_EN.Rmd"
+
+## Vue d'ensemble de l'algorithme
+
+L'algorithme WNN est une méthode non-paramétrique qui :
+
+1. **Extrait** les `w` dernières observations comme motif de référence
+2. **Recherche** dans les données historiques des motifs similaires
+3. **Identifie** les `k` plus proches voisins en utilisant la distance euclidienne
+4. **Combine** les valeurs futures suivant chaque voisin avec une pondération inverse au carré de la distance
+
+### Formulation Mathématique
+
+Étant donné une série temporelle avec des valeurs jusqu'à $c_i$, on souhaite prédire les $h$ prochaines valeurs.
+
+La fenêtre de référence est :
+$$CC_i = [c_{i-w+1}, c_{i-w+2}, \ldots, c_i]$$
+
+La distance euclidienne entre les motifs :
+$$dist(i,j) = ||CC_i - CC_j||$$
+
+La prévision pondérée :
+$$\hat{C}_i = \frac{1}{\sum_{j=1}^{k} \alpha_j} \sum_{j=1}^{k} \alpha_j C_{q_j}$$
+
+où $\alpha_j = \frac{1}{dist(CC_{q_j}, CC_i)^2}$
+
+# Exemple : Jeu de Données AirPassengers
+
+Nous utiliserons le jeu de données classique `AirPassengers` pour démontrer l'algorithme WNN.
+
+## Exploration des Données
+
+```{r data-exploration}
+# Charger le jeu de données AirPassengers
+data(AirPassengers)
+
+# Informations de base
+cat("Jeu de données : AirPassengers\n")
+cat("Longueur :", length(AirPassengers), "observations\n")
+cat("Fréquence :", frequency(AirPassengers), "(mensuelle)\n")
+cat("Période :", paste(start(AirPassengers), collapse = "-"), "à",
+    paste(end(AirPassengers), collapse = "-"), "\n")
+
+# Visualiser les données
+autoplot(AirPassengers) +
+  ggtitle("Passagers Aériens Internationaux Mensuels (1949-1960)") +
+  xlab("Année") +
+  ylab("Passagers (milliers)")
+```
+
+## Séparation Train-Test
+
+Nous utiliserons les 132 premiers mois pour l'entraînement et les 12 derniers mois pour le test.
+
+```{r train-test-split}
+# Séparer les données
+train_end <- c(1959, 12)
+train <- window(AirPassengers, end = train_end)
+test <- window(AirPassengers, start = c(1960, 1))
+
+cat("Ensemble d'entraînement :", length(train), "observations\n")
+cat("Ensemble de test :", length(test), "observations\n")
+
+# Visualiser la séparation
+autoplot(train) +
+  autolayer(test, series = "Test") +
+  ggtitle("Séparation Train-Test") +
+  xlab("Année") +
+  ylab("Passagers")
+```
+
+## Entraînement et Prédiction du Modèle WNN
+
+```{r wnn-model}
+# Créer le modèle WNN
+# - horizon = 12 (prédire 12 mois)
+# - window = 24 (utiliser 24 mois pour la correspondance de motifs)
+# - k = 5 (utiliser 5 plus proches voisins)
+wnn_model <- WNN$new(horizon = 12, window = 24, k = 5)
+
+# Afficher les paramètres du modèle
+print(wnn_model)
+
+# Entraîner et prédire
+wnn_forecast <- wnn_model$fit_predict(train)
+
+# Afficher le résumé complet
+wnn_model$summary()
+```
+
+## Visualisation des Résultats
+
+```{r visualization}
+# Comparer prévision et valeurs réelles
+autoplot(train) +
+  autolayer(test, series = "Réel") +
+  autolayer(wnn_forecast, series = "Prévision WNN") +
+  ggtitle("Prévision WNN vs Valeurs Réelles") +
+  xlab("Année") +
+  ylab("Passagers") +
+  guides(colour = guide_legend(title = "Série"))
+```
+
+## Précision des Prévisions
+
+```{r accuracy}
+# Calculer les métriques de précision
+errors <- test - wnn_forecast
+
+# Erreur Absolue Moyenne (MAE)
+mae <- mean(abs(errors))
+
+# Racine de l'Erreur Quadratique Moyenne (RMSE)
+rmse <- sqrt(mean(errors^2))
+
+# Erreur Absolue Moyenne en Pourcentage (MAPE)
+mape <- mean(abs(errors / test)) * 100
+
+cat("Métriques de Précision des Prévisions :\n")
+cat("---------------------------------------\n")
+cat("MAE  :", round(mae, 2), "\n")
+cat("RMSE :", round(rmse, 2), "\n")
+cat("MAPE :", round(mape, 2), "%\n")
+```
+
+# Comparaison avec d'Autres Méthodes
+
+Comparons WNN avec des méthodes de prévision traditionnelles.
+
+```{r comparison}
+# Modèle ETS
+ets_model <- ets(train)
+ets_forecast <- forecast(ets_model, h = 12)
+
+# Modèle ARIMA
+arima_model <- auto.arima(train)
+arima_forecast <- forecast(arima_model, h = 12)
+
+# Calculer le RMSE pour chaque méthode
+rmse_wnn <- sqrt(mean((test - wnn_forecast)^2))
+rmse_ets <- sqrt(mean((test - ets_forecast$mean)^2))
+rmse_arima <- sqrt(mean((test - arima_forecast$mean)^2))
+
+# Créer le tableau de comparaison
+comparison <- data.frame(
+  Methode = c("WNN (k=5, w=24)", "ETS", "ARIMA"),
+  RMSE = round(c(rmse_wnn, rmse_ets, rmse_arima), 2)
+)
+
+print(comparison)
+```
+
+```{r comparison-plot}
+# Comparaison visuelle
+autoplot(train) +
+  autolayer(test, series = "Réel") +
+  autolayer(wnn_forecast, series = "WNN") +
+  autolayer(ets_forecast$mean, series = "ETS") +
+  autolayer(arima_forecast$mean, series = "ARIMA") +
+  ggtitle("Comparaison des Méthodes de Prévision") +
+  xlab("Année") +
+  ylab("Passagers") +
+  guides(colour = guide_legend(title = "Méthode"))
+```
+
+# Sensibilité aux Hyperparamètres
+
+Explorons comment les différents hyperparamètres affectent la prévision.
+
+## Effet de k (Nombre de Voisins)
+
+```{r hyperparameter-k}
+k_values <- c(1, 3, 5, 7, 10)
+results <- data.frame(k = integer(), RMSE = numeric())
+
+for (k in k_values) {
+  model <- WNN$new(horizon = 12, window = 24, k = k)
+  pred <- model$fit_predict(train)
+  rmse <- sqrt(mean((test - pred)^2))
+  results <- rbind(results, data.frame(k = k, RMSE = rmse))
+}
+
+print(results)
+
+ggplot(results, aes(x = k, y = RMSE)) +
+  geom_line() +
+  geom_point(size = 3) +
+  ggtitle("Effet du Nombre de Voisins (k) sur le RMSE") +
+  xlab("Nombre de Voisins (k)") +
+  ylab("RMSE")
+```
+
+## Effet de la Taille de Fenêtre (w)
+
+```{r hyperparameter-w}
+window_values <- c(12, 18, 24, 36, 48)
+results_w <- data.frame(window = integer(), RMSE = numeric())
+
+for (w in window_values) {
+  model <- WNN$new(horizon = 12, window = w, k = 5)
+  pred <- model$fit_predict(train)
+  rmse <- sqrt(mean((test - pred)^2))
+  results_w <- rbind(results_w, data.frame(window = w, RMSE = rmse))
+}
+
+print(results_w)
+
+ggplot(results_w, aes(x = window, y = RMSE)) +
+  geom_line() +
+  geom_point(size = 3) +
+  ggtitle("Effet de la Taille de Fenêtre (w) sur le RMSE") +
+  xlab("Taille de Fenêtre (w)") +
+  ylab("RMSE")
+```
+
+# Conclusion
+
+L'algorithme **WNN** offre une approche simple mais efficace pour la prévision de séries temporelles :
+
+**Points forts :**
+
+- Facile à comprendre et à implémenter
+- Aucune hypothèse sur la distribution des données
+- Fonctionne bien avec des motifs récurrents
+- Peu d'hyperparamètres à régler
+
+**Points à considérer :**
+
+- Le coût computationnel augmente avec la longueur de la série
+- Nécessite suffisamment de données historiques
+- La performance dépend de la similarité des motifs dans les données
+
+## Références
+
+Talavera-Llames, R.L., Pérez-Chacón, R., Martínez-Ballesteros, M., Troncoso, A., 
+Martínez-Álvarez, F. (2016). **A Nearest Neighbours-Based Algorithm for Big Time 
+Series Data Forecasting**. In: Hybrid Artificial Intelligent Systems. HAIS 2016. 
+Lecture Notes in Computer Science, vol 9648. Springer, Cham.

@@ -44,7 +44,9 @@
 #' @section Methods:
 #' \describe{
 #'   \item{\code{new(horizon, window, k)}}{Creates a new WNN model with specified parameters.}
-#'   \item{\code{fit_predict(tsdata)}}{Fits the model to the time series and returns the forecast.}
+#'   \item{\code{fit(tsdata)}}{Fits the model to the time series (stores training data).}
+#'   \item{\code{predict(pattern)}}{Generates forecast using fitted model.}
+#'   \item{\code{fit_predict(tsdata)}}{Fits the model and returns the forecast in one step.}
 #' }
 #'
 #' @references
@@ -81,34 +83,75 @@ WNN <- R6::R6Class(
     },
 
     #' @description
-    #' Fit the model and generate predictions
+    #' Fit the model with training data
+    #'
+    #' Stores the time series data for later prediction.
+    #'
+    #' @param tsdata A univariate time series (ts object) or numeric vector.
+    #' @return Invisible self (for method chaining).
+    #'
+    #' @examples
+    #' data <- ts(rnorm(200), frequency = 12)
+    #' wnn <- WNN$new(horizon = 12, window = 24, k = 3)
+    #' wnn$fit(data)
+    fit = function(tsdata) {
+      # Validate input time series
+      private$._validate_tsdata(tsdata)
+
+      # Store the training data
+      private$._original_data <- tsdata
+
+      # Reset forecast results
+      private$._forecast <- NULL
+      private$._distances <- NULL
+      private$._weights <- NULL
+      private$._nearest_neighbors <- NULL
+
+      invisible(self)
+    },
+
+    #' @description
+    #' Generate predictions using the fitted model
     #'
     #' This method implements the WNN algorithm:
-    #' 1. Extracts the reference window (last w observations)
+    #' 1. Extracts the reference window (last w observations from fitted data or custom pattern)
     #' 2. Finds the k nearest neighbors in the historical data
     #' 3. Computes a weighted average of their subsequent h values
     #'
-    #' @param tsdata A univariate time series (ts object) or numeric vector.
+    #' @param pattern Optional. A numeric vector of length w to use as reference pattern.
+    #'   If NULL, uses the last w values of the fitted data.
     #' @return A time series object containing the h predicted values.
     #'
     #' @examples
     #' data <- ts(rnorm(200), frequency = 12)
     #' wnn <- WNN$new(horizon = 12, window = 24, k = 3)
-    #' forecast <- wnn$fit_predict(data)
-    fit_predict = function(tsdata) {
-      # Validate input time series
-      private$._validate_tsdata(tsdata)
+    #' wnn$fit(data)
+    #' forecast <- wnn$predict()
+    predict = function(pattern = NULL) {
+      # Check if model is fitted
+      if (is.null(private$._original_data)) {
+        stop("Model must be fitted before prediction. Call fit() first.")
+      }
 
-      # Extract the reference window CCi (last w values)
+      tsdata <- private$._original_data
       n <- length(tsdata)
-      CCi <- tsdata[(n - private$._w + 1):n]
+
+      # Extract the reference window CCi
+      if (is.null(pattern)) {
+        CCi <- tsdata[(n - private$._w + 1):n]
+      } else {
+        if (length(pattern) != private$._w) {
+          stop(paste("Pattern must have length w =", private$._w))
+        }
+        CCi <- pattern
+      }
 
       # Initialize storage for k nearest neighbors
       top_k_distances <- rep(Inf, private$._k)
       top_k_futures <- vector("list", private$._k)
+      top_k_indices <- rep(NA, private$._k)
 
       # Maximum starting index for sliding window
-      # We need w values for pattern + h values for future
       max_start <- n - private$._w - private$._h + 1
 
       # Slide through all possible windows
@@ -120,7 +163,7 @@ WNN <- R6::R6Class(
         CCj <- window_and_future[1:private$._w]
         future_values <- window_and_future[(private$._w + 1):(private$._w + private$._h)]
 
-        # Compute Euclidean distance using private function
+        # Compute Euclidean distance
         dist_ij <- private$._euclidean_distance(CCi, CCj)
 
         # Check if this is among the k nearest
@@ -128,16 +171,19 @@ WNN <- R6::R6Class(
         if (dist_ij < top_k_distances[max_dist_idx]) {
           top_k_distances[max_dist_idx] <- dist_ij
           top_k_futures[[max_dist_idx]] <- future_values
+          top_k_indices[max_dist_idx] <- i
         }
       }
 
+      # Sort neighbors by distance
+      sort_order <- order(top_k_distances)
+      top_k_distances <- top_k_distances[sort_order]
+      top_k_futures <- top_k_futures[sort_order]
+      top_k_indices <- top_k_indices[sort_order]
+
       # Compute weights: alpha_j = 1 / (distance^2)
-      # add a small constant to avoid division by zero
-      # otherwise if distance=0 -> alpha=Inf
       epsilon <- 1e-10
       alpha <- 1 / ((top_k_distances + epsilon)^2)
-
-      # Normalize weights to sum to 1
       alpha <- alpha / sum(alpha)
 
       # Weighted forecast
@@ -152,12 +198,34 @@ WNN <- R6::R6Class(
       }
 
       # Store results
-      private$._original_data <- tsdata
       private$._forecast <- forecast
       private$._distances <- top_k_distances
       private$._weights <- alpha
+      private$._nearest_neighbors <- list(
+        indices = top_k_indices,
+        distances = top_k_distances,
+        weights = alpha,
+        future_values = top_k_futures
+      )
 
       return(forecast)
+    },
+
+    #' @description
+    #' Fit the model and generate predictions
+    #'
+    #' This method combines fit() and predict() in one step.
+    #'
+    #' @param tsdata A univariate time series (ts object) or numeric vector.
+    #' @return A time series object containing the h predicted values.
+    #'
+    #' @examples
+    #' data <- ts(rnorm(200), frequency = 12)
+    #' wnn <- WNN$new(horizon = 12, window = 24, k = 3)
+    #' forecast <- wnn$fit_predict(data)
+    fit_predict = function(tsdata) {
+      self$fit(tsdata)
+      return(self$predict())
     },
 
     #' @description
@@ -220,6 +288,7 @@ WNN <- R6::R6Class(
 
       # Nearest neighbors info
       cat(">> NEAREST NEIGHBORS\n")
+      cat("   Indices         :", paste(private$._nearest_neighbors$indices, collapse = ", "), "\n")
       cat("   Distances       :", paste(round(private$._distances, 4), collapse = ", "), "\n")
       cat("   Weights (alpha) :", paste(round(private$._weights, 4), collapse = ", "), "\n\n")
 
@@ -254,7 +323,10 @@ WNN <- R6::R6Class(
     get_distances = function() private$._distances,
 
     #' @description Get the weights used for the weighted average
-    get_weights = function() private$._weights
+    get_weights = function() private$._weights,
+
+    #' @description Get the k nearest neighbors information
+    get_nearest_neighbors = function() private$._nearest_neighbors
   ),
 
   # -- Private --
@@ -269,6 +341,7 @@ WNN <- R6::R6Class(
     ._forecast = NULL,
     ._distances = NULL,
     ._weights = NULL,
+    ._nearest_neighbors = NULL,
 
     # Euclidean distance between two vectors
     ._euclidean_distance = function(vec1, vec2) {

@@ -225,7 +225,7 @@ WNN <- R6::R6Class(
     #' forecast <- wnn$fit_predict(data)
     fit_predict = function(tsdata) {
       self$fit(tsdata)
-      return(self$predict())
+      self$predict()
     },
 
     #' @description

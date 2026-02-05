@@ -35,6 +35,12 @@ The objective is to implement the WNN algorithm as described in Talavera-Llames 
 install.packages("R6")
 ```
 
+### From GitHub
+
+```r
+devtools::install_github("OlivierBOROT/SISE_WNN_implementation")
+```
+
 ### From Source
 
 ```r
@@ -136,6 +142,12 @@ L'objectif est d'implémenter l'algorithme WNN tel que décrit dans Talavera-Lla
 
 ```r
 install.packages("R6")
+```
+
+### Depuis GitHub
+
+```r
+devtools::install_github("OlivierBOROT/SISE_WNN_implementation")
 ```
 
 ### Depuis le Code Source
